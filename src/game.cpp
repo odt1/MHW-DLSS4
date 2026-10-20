@@ -511,8 +511,9 @@ void HoldTaaOnly() {
     } else if (g_aaHeld) {
         g_aaHeld = false;
         // Turning DLSS off makes the game apply the option again (after clearing the DLSS state
-        // checked above), so only a hold the plugin ends itself has a setting to give back.
-        if (dlss && g_aaOurs && g_aaGame != kAaTaaOnly) {
+        // checked above), so only a hold the plugin ends itself has a setting to give back. When
+        // NGX failed, the plugin has turned DLSS off already (render scale recompute) by now.
+        if ((dlss || unavailable) && g_aaOurs && g_aaGame != kAaTaaOnly) {
             *word = g_aaGame;
             g_aaOurs = false;
             LOGD("anti-aliasing: back to the game's {} ({})", AaName(g_aaGame),
@@ -686,7 +687,7 @@ void* __fastcall HookTaaUpdate(void* self) {
     HoldTaaOnly();
     HoldReflectionJitterOff();
     HoldMipBias();
-    if (!DlssEnabledInGame() || Bypassed()) return g_origTaaUpdate(self);
+    if (!DlssEnabledInGame() || Bypassed() || g_dlssUnavailable) return g_origTaaUpdate(self);
     auto* taa = static_cast<uint8_t*>(self);
     auto* enable = taa + kTaaJitterEnable;
     uint8_t saved = *enable;
@@ -718,7 +719,7 @@ void* __fastcall HookTaaDraw(void* self, void* drawContext) {
     bool dlss = DlssEnabledInGame();
     // With the TAA sharpen pass on, the game points DLSS at the next history slot and then has the
     // sharpen pass write the sharpened TAA result over it. The pass stays off while DLSS runs.
-    SharpenGuard sharpen(taa, dlss && !Bypassed());
+    SharpenGuard sharpen(taa, dlss && !Bypassed() && !g_dlssUnavailable);
     if (dlss) PatchViewDepth(static_cast<uint8_t*>(drawContext));
     CaptureJitter(taa);
     return g_origTaaDraw(self, drawContext);
@@ -759,8 +760,10 @@ bool HookFrameUpdate(const mem::Section& text, const mem::Section& rdata, std::s
         LOGW("game: {} not found ({} matches); NVIDIA Reflex works without it", name, matches.size());
         return false;
     }
-    original = reinterpret_cast<FrameUpdateFn>(*slot);
-    mem::WritePointer(slot, hook);
+    if (!mem::HookSlot(slot, hook, reinterpret_cast<void**>(&original))) {
+        LOGW("game: {} vtable slot +{:#x} could not be hooked; NVIDIA Reflex works without it", name, Rva(slot));
+        return false;
+    }
     LOGD("game: {} +{:#x} hooked through vtable slot +{:#x}", name, Rva(matches[0]), Rva(slot));
     return true;
 }
@@ -811,11 +814,12 @@ bool Init() {
         LOGE("game: TAA draw slot +{:#x} does not point at the expected function", Rva(drawSlot));
         return false;
     }
-    g_origTaaDraw = reinterpret_cast<TaaDrawFn>(*drawSlot);
-    mem::WritePointer(drawSlot, reinterpret_cast<void*>(&HookTaaDraw));
+    if (!mem::HookSlot(drawSlot, reinterpret_cast<void*>(&HookTaaDraw), reinterpret_cast<void**>(&g_origTaaDraw)) ||
+        !mem::HookSlot(updateSlot, reinterpret_cast<void*>(&HookTaaUpdate), reinterpret_cast<void**>(&g_origTaaUpdate))) {
+        LOGE("game: the TAA vtable slots could not be hooked");
+        return false;
+    }
     LOGD("game: TAA draw +{:#x} hooked through vtable slot +{:#x}", Rva(g_origTaaDraw), Rva(drawSlot));
-    g_origTaaUpdate = reinterpret_cast<TaaUpdateFn>(*updateSlot);
-    mem::WritePointer(updateSlot, reinterpret_cast<void*>(&HookTaaUpdate));
 
     auto recompute = mem::FindPattern(*text, kRecomputePattern);
     if (recompute.size() == 1) {
@@ -952,6 +956,8 @@ void Activate(const Config& config) {
     ApplyConfig(config);
     g_active = true;
 }
+
+void Deactivate() { g_active = false; }
 
 uint64_t Frame() {
     uint8_t* renderer = g_renderer ? *g_renderer : nullptr;

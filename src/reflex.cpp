@@ -240,20 +240,22 @@ bool HookSwapChain(IDXGISwapChain* swapChain) {
         return false;
     }
     auto** slot = const_cast<void**>(vtable + kPresentSlot);
-    g_origPresent = reinterpret_cast<PresentFn>(*slot);
+    if (!mem::HookSlot(slot, reinterpret_cast<void*>(&HookPresent), reinterpret_cast<void**>(&g_origPresent))) {
+        LOGW("NVIDIA Reflex: the swap chain's Present could not be hooked");
+        return false;
+    }
     g_presentVtable = vtable;
-    mem::WritePointer(slot, reinterpret_cast<void*>(&HookPresent));
     return true;
 }
 
 void HookImports() {
     if (void** slot = game::SetEventImport(); slot && !g_origSetEvent) {
-        g_origSetEvent = reinterpret_cast<SetEventFn>(*slot);
-        mem::WritePointer(slot, reinterpret_cast<void*>(&HookSetEvent));
+        if (!mem::HookSlot(slot, reinterpret_cast<void*>(&HookSetEvent), reinterpret_cast<void**>(&g_origSetEvent)))
+            g_origSetEvent = nullptr;
     }
     if (void** slot = game::WaitForSingleObjectImport(); slot && !g_origWait) {
-        g_origWait = reinterpret_cast<WaitFn>(*slot);
-        mem::WritePointer(slot, reinterpret_cast<void*>(&HookWait));
+        if (!mem::HookSlot(slot, reinterpret_cast<void*>(&HookWait), reinterpret_cast<void**>(&g_origWait)))
+            g_origWait = nullptr;
     }
 }
 

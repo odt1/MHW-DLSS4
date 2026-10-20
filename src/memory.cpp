@@ -77,6 +77,21 @@ void* WritePointer(void** slot, void* value) {
     return old;
 }
 
+bool HookSlot(void** slot, void* hook, void** original) {
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        auto current = SafeRead<void*>(slot);
+        if (!current || !*current || *current == hook) return false;
+        *original = *current;
+        DWORD oldProtect;
+        if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect)) return false;
+        void* seen = InterlockedCompareExchangePointer(slot, hook, *current);
+        DWORD dummy;
+        VirtualProtect(slot, sizeof(void*), oldProtect, &dummy);
+        if (seen == *current) return true;
+    }
+    return false;
+}
+
 bool SafeRead(const void* src, void* dst, size_t size) {
     __try {
         std::memcpy(dst, src, size);

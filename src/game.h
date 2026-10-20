@@ -36,6 +36,8 @@ struct Jitter {
 bool Init();
 // Makes the hooks act, once the NGX side is installed too, with the settings from `config`.
 void Activate(const Config& config);
+// The hooks pass straight through again (no NVIDIA GPU: nothing for the plugin to do).
+void Deactivate();
 // Publishes the settings the hooks read (call after every ini load).
 void ApplyConfig(const Config& config);
 
@@ -87,7 +89,7 @@ uint64_t Frame();
 bool RecomputeRenderScale();
 
 // NGX could not be initialised: DLSS cannot run this session, so the game's own anti-aliasing
-// setting is given back.
+// setting is given back and the jitter and TAA sharpen changes stop.
 void SetDlssUnavailable(bool unavailable);
 
 // NVIDIA DLSS is on in the graphics options and the renderer runs a DLSS pass (not DLISP alone).

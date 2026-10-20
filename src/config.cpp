@@ -263,6 +263,8 @@ void LoadConfig(const std::wstring& ini) {
     c.debugFixedJitter = ReadBool(ini, L"Advanced", L"DebugFixedJitter", c.debugFixedJitter);
     c.debugJitterX = ReadFloat(ini, L"Advanced", L"DebugJitterX", c.debugJitterX);
     c.debugJitterY = ReadFloat(ini, L"Advanced", L"DebugJitterY", c.debugJitterY);
+    c.debugNgxFail = ReadBool(ini, L"Advanced", L"DebugNgxFail", c.debugNgxFail);
+    c.debugNoNvidia = ReadBool(ini, L"Advanced", L"DebugNoNvidia", c.debugNoNvidia);
     c.latencyStats = ReadBool(ini, L"Advanced", L"LatencyStats", c.latencyStats);
     // Reflex frame rate cap: measured to add the same input lag as the game's own cap and the
     // driver's (with LowLatency on), so it is only kept for measurements.

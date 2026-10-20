@@ -35,6 +35,13 @@ inline uint8_t* RipTarget(const uint8_t* disp, const uint8_t* insnEnd) {
 // Writes a pointer-sized value into memory that may be read-only. Returns the old value.
 void* WritePointer(void** slot, void* value);
 
+// Points a function pointer slot (vtable entry, import) at `hook`, chaining to what it held: that
+// value is stored in `original` before the slot changes, so a call through the slot right after
+// finds it. The swap only happens if the slot still holds that value; when another plugin changes
+// the slot meanwhile, it is read again. False when the slot is empty, already hooked or never
+// held still. Same scheme as mem::HookPointer in the user's other MHW plugins.
+bool HookSlot(void** slot, void* hook, void** original);
+
 // Reads memory without faulting; false if the range is not readable.
 bool SafeRead(const void* src, void* dst, size_t size);
 

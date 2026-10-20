@@ -8,4 +8,7 @@ namespace mhwdlss::ngx {
 // where the plugin keeps its DLSS DLLs; `gameDir` is the game folder.
 bool Install(const std::wstring& dataDir, const std::wstring& gameDir);
 
+// Wine's version when the game runs under Wine or Proton, otherwise null.
+const char* WineVersion();
+
 }  // namespace mhwdlss::ngx

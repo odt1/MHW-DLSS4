@@ -31,6 +31,7 @@ void Start(HMODULE module) {
     LoadGameOptions((exe.parent_path() / L"graphics_option.ini").wstring());
     LOGI("MHW-DLSS4 {} loaded from {}", MHW_DLSS4_VERSION, Narrow(dll));
     LOGI("game: {}", Narrow(exe));
+    if (const char* wine = ngx::WineVersion()) LOGI("running under Wine {}", wine);
     LOGI("config: mode {} (render scale {:.3f}), preset {}, sharpness {:.2f}{} with {}, depth inverted {}, MV scale {},{}, "
          "jitter scale {},{}, reflection fix {}, Reflex {}, frame limit {}",
          QualityModeName(g_config.mode), g_config.RenderScale(),

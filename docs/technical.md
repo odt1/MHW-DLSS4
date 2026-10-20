@@ -172,6 +172,8 @@ The default ini only holds the player settings. These keys are read from an `[Ad
 | `DebugDumpFrames`, `DebugDumpDelay` | 0, 5 | D3D12: dump N frames of colour, motion, depth and jitter to `MHW-DLSS4\`, starting the given seconds after the reload. |
 | `DebugDumpOutput` | 0 | D3D11: write one DLSS output frame to `MHW-DLSS4\output.bin`. |
 | `DebugFixedJitter`, `DebugJitterX/Y` | 0 | Replace the camera jitter with a constant (camera units). |
+| `DebugNgxFail` | 0 | Act as if NGX could not be initialised (the Proton report of 0.9.4): DLSS turns itself off and the game renders at full size. Read at the first DLSS evaluate. |
+| `DebugNoNvidia` | 0 | Act as if the PC had no NVIDIA graphics card: the game's NGX init fails (the game then shows its own "DLSS not available" message once and writes `NVIDIA DLSS=Off` into graphics_option.ini) and the plugin switches itself off. |
 | `LatencyStats` | 0 | Log NVIDIA's latency report every 5 seconds (Reflex markers; works with `LowLatency=Off` too). |
 | `FrameLimit` | 0 | Frame rate cap through Reflex (`minimumIntervalUs`), fps; 0 = none. Measured to add the same input lag as the game's Frame Rate option and the driver's Max Frame Rate with `LowLatency` on, so it is a measurement tool, not a player setting (it was one in the 0.9.0 working copy). |
 | `ReflexSleep` | 1 | 0 = set the markers and the sleep mode but never call `NvAPI_D3D_Sleep`, to compare where the driver waits. |

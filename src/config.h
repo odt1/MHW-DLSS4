@@ -85,6 +85,8 @@ struct Config {
     bool debugFixedJitter = false; // replace the camera jitter with a constant (camera units)
     float debugJitterX = 0.0f;
     float debugJitterY = 0.0f;
+    bool debugNgxFail = false;    // act as if NGX could not be initialised (the Proton failure)
+    bool debugNoNvidia = false;   // act as if the PC had no NVIDIA graphics card
     bool latencyStats = false;    // log NVIDIA's latency report every few seconds (Reflex markers)
     bool reflexSleep = true;      // call NvAPI_D3D_Sleep each frame (0: markers only)
 

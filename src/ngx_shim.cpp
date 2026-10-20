@@ -147,6 +147,9 @@ bool g_probeRequested = false;
 bool g_dumpOutputRequested = false;
 // The context was adopted after the game had set DLSS up through its NGX 1.x core (see OnUpdate).
 bool g_adoptedLate = false;
+// NGX could not be initialised and the game still has DLSS on: OnUpdate asks it for the render
+// scale again, which the optimal settings callback then refuses (see there).
+bool g_dlssOffPending = false;
 
 ApiState& State(Api api) { return g_api[api == Api::D3D12 ? 1 : 0]; }
 
@@ -245,6 +248,10 @@ bool StaleFrame(Feature& f, unsigned width, unsigned height) {
 NVSDK_NGX_Result NVSDK_CONV OptimalSettingsCallback(NVSDK_NGX_Parameter* p) {
     if (!p) return NVSDK_NGX_Result_FAIL_InvalidParameter;
     std::lock_guard lock(g_mutex);  // g_config is replaced under it on ini reloads
+    // Without NGX the game gets no settings. It then sets render scale 1 and DLSS type 0, which
+    // renders without a DLSS pass, and shows its DLSS option as unavailable (+0x2383ef0, +0x4431f0).
+    // Otherwise it keeps rendering below the output size for a DLISP call that cannot upscale.
+    if (g_modern.attempted && !g_modern.ready) return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
     unsigned w = GetUI(p, NVSDK_NGX_Parameter_Width);
     unsigned h = GetUI(p, NVSDK_NGX_Parameter_Height);
     float scale = g_config.RenderScale();
@@ -315,6 +322,13 @@ bool EnsureModern(Api api, void* device) {
     }
     bool ready = InitModern(api, device);
     game::SetDlssUnavailable(!ready);
+    if (!ready) {
+        g_dlssOffPending = true;
+        if (const char* wine = WineVersion())
+            LOGW("running under Wine {}: with Proton, DLSS needs NVAPI (Steam launch options: PROTON_ENABLE_NVAPI=1 "
+                 "%command%) and the NVIDIA driver's nvngx.dll, which Proton copies into the game's prefix",
+                 wine);
+    }
     return ready;
 }
 
@@ -342,6 +356,10 @@ bool InitModern(Api api, void* device) {
         g_config.ngxLogging ? NVSDK_NGX_LOGGING_LEVEL_VERBOSE : NVSDK_NGX_LOGGING_LEVEL_OFF;
     info.LoggingInfo.DisableOtherLoggingSinks = true;
 
+    if (g_config.debugNgxFail) {
+        LOGE("NGX {} init failed (DebugNgxFail)", ApiName(api));
+        return false;
+    }
     NVSDK_NGX_Result r =
         api == Api::D3D12
             ? NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, MHW_DLSS4_VERSION,
@@ -862,7 +880,7 @@ NVSDK_NGX_Result ShimRelease(Api api, NVSDK_NGX_Handle* handle) {
     return NVSDK_NGX_Result_Success;
 }
 
-bool IsNvidiaGpu();
+bool IsNvidiaGpu(std::string* others = nullptr);
 
 template <Api A>
 struct Entry {
@@ -958,7 +976,15 @@ void PatchTable(ApiState& s, Api api, bool initial) {
         LOGW("NGX {} table was rewritten by the game, hooked again", ApiName(api));
 }
 
-bool IsNvidiaGpu() {
+// Whether DXGI lists an NVIDIA adapter. `others` gets the names of the other hardware adapters.
+bool IsNvidiaGpu(std::string* others) {
+    {
+        std::lock_guard lock(g_mutex);
+        if (g_config.debugNoNvidia) {
+            if (others) *others = "DebugNoNvidia";
+            return false;
+        }
+    }
     // dxgi.dll is resolved at run time so loading the plugin never pulls it in.
     HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
     if (!dxgi) dxgi = LoadLibraryW(L"dxgi.dll");
@@ -969,7 +995,13 @@ bool IsNvidiaGpu() {
     ComPtr<IDXGIAdapter1> adapter;
     for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
         DXGI_ADAPTER_DESC1 desc;
-        if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.VendorId == 0x10de) return true;
+        if (FAILED(adapter->GetDesc1(&desc))) continue;
+        if (desc.VendorId == 0x10de) return true;
+        if (!others || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
+        char name[256];
+        if (!WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr)) continue;
+        if (!others->empty()) *others += ", ";
+        *others += name;
     }
     return false;
 }
@@ -1032,8 +1064,11 @@ void HookNgxLookups(HMODULE exe) {
              "DLSS may need to be turned off and on in the graphics options");
         return;
     }
-    g_realGetProcAddress = reinterpret_cast<GetProcAddressFn>(*slot);
-    mem::WritePointer(slot, reinterpret_cast<void*>(&HookGetProcAddress));
+    if (!mem::HookSlot(slot, reinterpret_cast<void*>(&HookGetProcAddress), reinterpret_cast<void**>(&g_realGetProcAddress))) {
+        LOGW("loaded before the game's renderer, but the GetProcAddress import of its NGX init could not be hooked; "
+             "DLSS may need to be turned off and on in the graphics options");
+        return;
+    }
     LOGD("loaded before the game's renderer: its NGX init will get the plugin's entries (import slot +{:#x})",
          reinterpret_cast<uint8_t*>(slot) - reinterpret_cast<uint8_t*>(exe));
 }
@@ -1074,8 +1109,16 @@ void AdoptContext(bool mayUseDxgi) {
         LOGW("no DLSS context and the renderer API is unknown; DLSS stays unavailable");
         return;
     }
-    if (!legacyLoaded && !IsNvidiaGpu()) {
-        LOGI("no NVIDIA GPU, leaving DLSS off");
+    std::string others;
+    if (!legacyLoaded && !IsNvidiaGpu(&others)) {
+        // DLSS and Reflex both need one; the hooks call straight through to the game from now on.
+        LOGW("no NVIDIA graphics card found ({}): DLSS and Reflex need one, the plugin stays inactive",
+             others.empty() ? "none listed" : others);
+        if (const char* wine = WineVersion())
+            LOGW("running under Wine {}: with Proton, an NVIDIA card can show up as another vendor unless NVAPI is "
+                 "on (Steam launch options: PROTON_ENABLE_NVAPI=1 %command%)",
+                 wine);
+        game::Deactivate();
         return;
     }
     auto* mem = static_cast<game::DlssContext*>(game::GameAlloc(sizeof(game::DlssContext)));
@@ -1132,6 +1175,14 @@ void OnUpdate() {
         PatchTable(g_api[1], Api::D3D12, false);
         AdoptContext(true);
         d3d::RetireTick(game::Frame());
+        if (g_dlssOffPending) {
+            g_dlssOffPending = false;
+            if (game::DlssEnabledInGame()) {
+                LOGW("DLSS could not be started (see above): the game renders without it and shows its NVIDIA DLSS "
+                     "option as unavailable until the next start");
+                recompute = true;
+            }
+        }
         // The game set DLSS up through the NGX 1.x core before the context was adopted (normally
         // prevented by HookNgxLookups). With a DLSS pass, asking again is a Mode switch. Without one
         // (DLSS 1's upscaler alone) switching at run time crashed the game's render thread, so
@@ -1223,6 +1274,13 @@ bool InstallTables(const std::wstring& dataDir, const std::wstring& gameDir) {
 }
 
 }  // namespace
+
+const char* WineVersion() {
+    using WineGetVersionFn = const char*(__cdecl*)();
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    auto get = ntdll ? reinterpret_cast<WineGetVersionFn>(GetProcAddress(ntdll, "wine_get_version")) : nullptr;
+    return get ? get() : nullptr;
+}
 
 bool Install(const std::wstring& dataDir, const std::wstring& gameDir) {
     if (!InstallTables(dataDir, gameDir)) return false;
