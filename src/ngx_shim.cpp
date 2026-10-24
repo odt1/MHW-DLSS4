@@ -309,6 +309,79 @@ void ShutdownLegacy() {
     g_legacyParams = nullptr;
 }
 
+// dxgi.dll is resolved at run time so loading the plugin never pulls it in.
+ComPtr<IDXGIFactory1> DxgiFactory() {
+    HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
+    if (!dxgi) dxgi = LoadLibraryW(L"dxgi.dll");
+    auto create = dxgi ? reinterpret_cast<decltype(&CreateDXGIFactory1)>(GetProcAddress(dxgi, "CreateDXGIFactory1"))
+                       : nullptr;
+    ComPtr<IDXGIFactory1> factory;
+    if (!create || FAILED(create(IID_PPV_ARGS(&factory)))) return nullptr;
+    return factory;
+}
+
+bool AdapterDesc(Api api, void* device, DXGI_ADAPTER_DESC* desc) {
+    ComPtr<IDXGIAdapter> adapter;
+    if (api == Api::D3D11) {
+        ComPtr<IDXGIDevice> dxgiDevice;
+        if (FAILED(static_cast<ID3D11Device*>(device)->QueryInterface(IID_PPV_ARGS(&dxgiDevice))) ||
+            FAILED(dxgiDevice->GetAdapter(&adapter)))
+            return false;
+    } else {
+        ComPtr<IDXGIFactory4> factory;
+        if (auto f = DxgiFactory(); !f || FAILED(f.As(&factory))) return false;
+        if (FAILED(factory->EnumAdapterByLuid(static_cast<ID3D12Device*>(device)->GetAdapterLuid(),
+                                              IID_PPV_ARGS(&adapter))))
+            return false;
+    }
+    return SUCCEEDED(adapter->GetDesc(desc));
+}
+
+// dxvk-nvapi's architecture name for the PCI device id of an NVIDIA RTX card. GTX 16 (Turing
+// without tensor cores: TU116 0x21xx, TU117 0x1f8x and up) has no DLSS.
+const wchar_t* RtxArchitecture(UINT id) {
+    if (id >= 0x2b00) return L"GB200";                 // Blackwell GB20x (RTX 50)
+    if (id >= 0x2600 && id < 0x2900) return L"AD100";  // Ada (RTX 40)
+    if (id >= 0x2200 && id < 0x2600) return L"GA100";  // Ampere (RTX 30)
+    if (id >= 0x1e00 && id < 0x1f80) return L"TU100";  // Turing TU102/TU104/TU106 (RTX 20)
+    return nullptr;
+}
+
+// dxvk-nvapi (Proton's NVAPI) reports Turing and newer GPUs as Pascal to MonsterHunterWorld.exe,
+// so that the game's own DLSS 1, which crashed under Proton, stays off. NGX then refuses DLSS too
+// ("unsupported hw detected"). Its override DXVK_NVAPI_GPU_ARCH is read at every
+// NvAPI_GPU_GetArchInfo call, so setting it here, after the game's NGX 1.x init, reaches only the
+// plugin's init. Set as a launch option it also reaches the game's DLSS 1 (the game then quit
+// before its logo in the Proton report).
+void UnspoofGpuArchitecture(Api api, void* device) {
+    const char* wine = WineVersion();
+    if (!wine) return;
+    wchar_t current[32];
+    if (DWORD n = GetEnvironmentVariableW(L"DXVK_NVAPI_GPU_ARCH", current, 32); n && n < 32) {
+        char name[32];
+        WideCharToMultiByte(CP_UTF8, 0, current, -1, name, sizeof(name), nullptr, nullptr);
+        LOGI("Wine: DXVK_NVAPI_GPU_ARCH={} from the launch options", name);
+        return;
+    }
+    DXGI_ADAPTER_DESC desc{};
+    if (!AdapterDesc(api, device, &desc)) {
+        LOGW("Wine: the game's graphics adapter could not be read; NVAPI keeps reporting it as it does");
+        return;
+    }
+    const wchar_t* arch = desc.VendorId == 0x10de ? RtxArchitecture(desc.DeviceId) : nullptr;
+    if (!arch) {
+        LOGI("Wine: adapter {:04x}:{:04x} is no known RTX card; NVAPI keeps reporting it as it does", desc.VendorId,
+             desc.DeviceId);
+        return;
+    }
+    SetEnvironmentVariableW(L"DXVK_NVAPI_GPU_ARCH", arch);
+    char name[16];
+    WideCharToMultiByte(CP_UTF8, 0, arch, -1, name, sizeof(name), nullptr, nullptr);
+    LOGI("Wine: DXVK_NVAPI_GPU_ARCH={} set for NGX (device {:04x}; dxvk-nvapi shows this game RTX cards as "
+         "GTX 10 cards)",
+         name, desc.DeviceId);
+}
+
 bool InitModern(Api api, void* device);
 
 bool EnsureModern(Api api, void* device) {
@@ -325,8 +398,9 @@ bool EnsureModern(Api api, void* device) {
     if (!ready) {
         g_dlssOffPending = true;
         if (const char* wine = WineVersion())
-            LOGW("running under Wine {}: with Proton, DLSS needs NVAPI (Steam launch options: PROTON_ENABLE_NVAPI=1 "
-                 "%command%) and the NVIDIA driver's nvngx.dll, which Proton copies into the game's prefix",
+            LOGW("running under Wine {}: DLSS needs Proton 9 or newer (Proton 8: PROTON_ENABLE_NVAPI=1 %command% in the "
+                 "Steam launch options) and the NVIDIA driver's nvngx.dll in the prefix's system32, which Proton "
+                 "copies from the driver",
                  wine);
     }
     return ready;
@@ -360,6 +434,7 @@ bool InitModern(Api api, void* device) {
         LOGE("NGX {} init failed (DebugNgxFail)", ApiName(api));
         return false;
     }
+    UnspoofGpuArchitecture(api, device);
     NVSDK_NGX_Result r =
         api == Api::D3D12
             ? NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, MHW_DLSS4_VERSION,
@@ -985,13 +1060,8 @@ bool IsNvidiaGpu(std::string* others) {
             return false;
         }
     }
-    // dxgi.dll is resolved at run time so loading the plugin never pulls it in.
-    HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
-    if (!dxgi) dxgi = LoadLibraryW(L"dxgi.dll");
-    auto create = dxgi ? reinterpret_cast<decltype(&CreateDXGIFactory1)>(GetProcAddress(dxgi, "CreateDXGIFactory1"))
-                       : nullptr;
-    ComPtr<IDXGIFactory1> factory;
-    if (!create || FAILED(create(IID_PPV_ARGS(&factory)))) return false;
+    ComPtr<IDXGIFactory1> factory = DxgiFactory();
+    if (!factory) return false;
     ComPtr<IDXGIAdapter1> adapter;
     for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
         DXGI_ADAPTER_DESC1 desc;
@@ -1115,8 +1185,9 @@ void AdoptContext(bool mayUseDxgi) {
         LOGW("no NVIDIA graphics card found ({}): DLSS and Reflex need one, the plugin stays inactive",
              others.empty() ? "none listed" : others);
         if (const char* wine = WineVersion())
-            LOGW("running under Wine {}: with Proton, an NVIDIA card can show up as another vendor unless NVAPI is "
-                 "on (Steam launch options: PROTON_ENABLE_NVAPI=1 %command%)",
+            LOGW("running under Wine {}: an NVIDIA card shows up as another vendor while NVAPI is off (Proton 8 and "
+                 "older: PROTON_ENABLE_NVAPI=1 %command% in the Steam launch options; newer Proton turns it off "
+                 "only with PROTON_DISABLE_NVAPI=1)",
                  wine);
         game::Deactivate();
         return;

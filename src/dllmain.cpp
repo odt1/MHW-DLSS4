@@ -16,6 +16,35 @@ namespace {
 
 std::string Narrow(const fs::path& p) { return p.string(); }
 
+// Under Wine: the host system, and where the NVIDIA driver's NGX core is registered. Proton copies
+// nvngx.dll and _nvngx.dll there from the driver; NGX can't start without them.
+void LogWine(const char* version) {
+    using HostVersionFn = void(__cdecl*)(const char**, const char**);
+    auto host = reinterpret_cast<HostVersionFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_host_version"));
+    const char* system = nullptr;
+    const char* release = nullptr;
+    if (host) host(&system, &release);
+    LOGI("running under Wine {} on {} {}", version, system ? system : "?", release ? release : "?");
+
+    wchar_t folder[MAX_PATH]{};
+    DWORD bytes = sizeof(folder);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", L"FullPath", RRF_RT_REG_SZ,
+                     nullptr, folder, &bytes) != ERROR_SUCCESS) {
+        LOGW("Wine: no NVIDIA NGX core registered in the prefix (Proton copies it from the NVIDIA driver): DLSS can't "
+             "start");
+        return;
+    }
+    fs::path core(folder);
+    std::error_code ec;
+    bool nvngx = fs::exists(core / L"nvngx.dll", ec);
+    bool core2 = fs::exists(core / L"_nvngx.dll", ec);
+    if (nvngx && core2)
+        LOGI("Wine: NVIDIA NGX core in {}", Narrow(core));
+    else
+        LOGW("Wine: NVIDIA NGX core registered in {}, but nvngx.dll {} and _nvngx.dll {}: DLSS can't start",
+             Narrow(core), nvngx ? "is there" : "is missing", core2 ? "is there" : "is missing");
+}
+
 void Start(HMODULE module) {
     wchar_t buf[MAX_PATH];
     GetModuleFileNameW(module, buf, MAX_PATH);
@@ -31,7 +60,7 @@ void Start(HMODULE module) {
     LoadGameOptions((exe.parent_path() / L"graphics_option.ini").wstring());
     LOGI("MHW-DLSS4 {} loaded from {}", MHW_DLSS4_VERSION, Narrow(dll));
     LOGI("game: {}", Narrow(exe));
-    if (const char* wine = ngx::WineVersion()) LOGI("running under Wine {}", wine);
+    if (const char* wine = ngx::WineVersion()) LogWine(wine);
     LOGI("config: mode {} (render scale {:.3f}), preset {}, sharpness {:.2f}{} with {}, depth inverted {}, MV scale {},{}, "
          "jitter scale {},{}, reflection fix {}, Reflex {}, frame limit {}",
          QualityModeName(g_config.mode), g_config.RenderScale(),
