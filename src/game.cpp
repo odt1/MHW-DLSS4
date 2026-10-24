@@ -584,13 +584,56 @@ void HoldReflectionJitterOff() {
 // (scene + g_sceneSamplerBank) when it is loaded (+0x2383566), so a bank set here applies to areas
 // loaded afterwards. With DLSS the textures should be sampled for the output resolution: NVIDIA
 // recommends log2(render scale) - 1 (the game's own dynamic resolution uses the same), which the
-// banks match closely: DLAA -1, Quality -1.58, Balanced -1.81, Performance -2.
+// banks match closely: DLAA -1, Quality -1.58, Balanced -1.81, Performance -2. The bank is held from
+// the first frame on: materials loaded before the title's first TAA pass (about 18 s later) stay
+// resident into the hub, and made up about a fifth of its material samplers.
 ptrdiff_t g_sceneSamplerBank = 0;
 std::mutex g_bankMutex;
 uint8_t* g_bankScene = nullptr;
 bool g_bankHeld = false;
 uint32_t g_bankGame = 0;   // the game's own bank, last seen
 uint32_t g_bankOurs = 0;   // the bank the plugin wrote (0 = none)
+uint32_t g_banksUsed = 0;  // banks the plugin has set this session, one bit each
+bool g_bankRoomLogged = false;
+
+// The D3D12 device's sampler table cache (device +0x1370, made once with the device by +0x23a48e0):
+// +0xc the next free slot, +0x10 the capacity (2048, the size of the shader-visible sampler heap
+// behind it). Each new combination of samplers a draw binds takes slots for the rest of the session:
+// the lookup (+0x2624870) appends without a bound check and nothing frees them. A bank the materials
+// use adds its own combinations (Astera with one bank: 260..360 slots in all), so a bank not set yet
+// this session is only set while this many slots are left.
+constexpr ptrdiff_t kDeviceSamplerCache = 0x1370;
+constexpr ptrdiff_t kSamplerCacheNext = 0xc;
+constexpr ptrdiff_t kSamplerCacheCapacity = 0x10;
+constexpr uint32_t kSamplerCacheReserve = 512;
+
+struct SamplerCacheUse {
+    uint32_t next = 0;
+    uint32_t capacity = 0;
+};
+
+// D3D12 only: D3D11 binds samplers without such a cache.
+std::optional<SamplerCacheUse> SamplerCache() {
+    uint8_t* device = Device();
+    if (!device || IsDx12() != true) return std::nullopt;
+    auto cache = mem::SafeRead<uint8_t*>(device + kDeviceSamplerCache).value_or(nullptr);
+    if (!cache) return std::nullopt;
+    auto next = mem::SafeRead<uint32_t>(cache + kSamplerCacheNext);
+    auto capacity = mem::SafeRead<uint32_t>(cache + kSamplerCacheCapacity);
+    if (!next || !capacity) return std::nullopt;
+    return SamplerCacheUse{*next, *capacity};
+}
+
+// The renderer's DLSS type and applied render scale agree (DLISP exactly below 1.0). At start-up the
+// game sets the type a frame before the scale (measured: 0.34 s), and a bank picked in between would
+// be DLAA's.
+bool RenderScaleSettled() {
+    uint8_t* renderer = g_renderer ? *g_renderer : nullptr;
+    if (!renderer) return false;
+    auto bits = mem::SafeRead<uint32_t>(renderer + kRendererDlssBits).value_or(0);
+    auto scale = mem::SafeRead<float>(renderer + kRendererScaleApplied).value_or(1.0f);
+    return ((bits & 2) != 0) == (scale < 1.0f);
+}
 
 uint32_t BankFor(float bias) {
     static const std::array<float, 8> kBias = {0.0f,           -1.0f,          -std::log2(2.5f), -std::log2(3.0f),
@@ -618,12 +661,23 @@ void HoldMipBias() {
     if (std::isnan(bias)) bias = std::log2(scale) - 1.0f;
     uint32_t wanted = BankFor(bias);
     if (DlssEnabledInGame() && !Bypassed() && !g_dlssUnavailable && wanted != 0) {
-        if (current != wanted) {
-            if (!g_bankOurs) g_bankGame = current;
-            *bank = wanted;
-            g_bankOurs = wanted;
-            LOGD("textures: mip bias bank {} ({:.2f} levels, render scale {:.3f}) for areas loaded from now on",
-                 wanted, -std::log2(1.5f + 0.5f * static_cast<float>(wanted)), scale);
+        if (current != wanted && RenderScaleSettled()) {
+            auto cache = SamplerCache();
+            bool used = (g_banksUsed & (1u << wanted)) != 0;
+            if (used || !cache || cache->next + kSamplerCacheReserve <= cache->capacity) {
+                if (!g_bankOurs) g_bankGame = current;
+                *bank = wanted;
+                g_bankOurs = wanted;
+                g_banksUsed |= 1u << wanted;
+                std::string use = cache ? std::format("; sampler cache {}/{}", cache->next, cache->capacity) : "";
+                LOGD("textures: mip bias bank {} ({:.2f} levels, render scale {:.3f}) for areas loaded from now on{}",
+                     wanted, -std::log2(1.5f + 0.5f * static_cast<float>(wanted)), scale, use);
+            } else if (!g_bankRoomLogged) {
+                g_bankRoomLogged = true;
+                LOGW("textures: the game's sampler cache has {} of {} slots left; areas loaded from now on keep "
+                     "mip bias bank {}",
+                     cache->capacity > cache->next ? cache->capacity - cache->next : 0, cache->capacity, current);
+            }
         }
         g_bankHeld = true;
     } else if (g_bankHeld) {
@@ -730,7 +784,11 @@ uint8_t* ExeBase() { return reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)
 uintptr_t Rva(const void* p) { return static_cast<uintptr_t>(static_cast<const uint8_t*>(p) - ExeBase()); }
 
 void* __fastcall HookMainUpdate(void* self) {
-    if (g_active && g_frameStartCallback) g_frameStartCallback();
+    if (g_active) {
+        // Runs from the first frame, long before the first TAA update.
+        HoldMipBias();
+        if (g_frameStartCallback) g_frameStartCallback();
+    }
     return g_origMainUpdate(self);
 }
 
