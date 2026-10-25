@@ -70,7 +70,11 @@ struct Config {
     // Texture mip bias while DLSS runs, in mip levels: NaN = log2(render scale) - 1 (NVIDIA's
     // recommendation), 0 = the game's own. The game has banks for 0, -1 and -log2(2.5 .. 5).
     float mipBias = std::numeric_limits<float>::quiet_NaN();
-    int hdr = -1;                 // -1 = from the game / input format, 0 or 1 = force
+    // Under Wine: DXVK_NVAPI_GPU_ARCH for the plugin's NGX init. Empty = from the card's PCI device
+    // id (a value from the launch options is kept), "OFF" = leave the variable alone, otherwise one
+    // of dxvk-nvapi's names (TU100, GA100, AD100, GB200, ...), upper case.
+    std::string gpuArch;
+    int hdr = -1;                // -1 = from the game / input format, 0 or 1 = force
     float exposureScale = 1.0f;
     float preExposure = 1.0f;
 

@@ -4,16 +4,15 @@ Changes in each version of MHW-DLSS4, for players. Developer detail is in the gi
 
 Unless a version says otherwise, no ini changes are needed and old ini files keep working. No version changes game files or game code.
 
-## 0.9.6 (in progress)
+## 0.9.7 (2026-10-25)
+
+0.9.6 was only released as a test build for Linux (0.9.6 test 1, 2026-10-24); its changes are part of 0.9.7.
 
 - Sharper textures from the start. Some textures are loaded while the game starts up and stay in use for the whole session, for example about a fifth of the hub's surfaces. Up to 0.9.5 these missed the sharper texture detail of Quality, Balanced and Performance. The detail is now set from the first frame, so they get it too.
 - Safer Mode changes while playing in DX12. Each new Mode used in a session takes up room in a table the game fills once and never clears. The plugin now stops changing texture detail well before that table is full. It writes a warning in the log, and the textures keep their current detail until you restart.
-
-Test 1 (2026-10-24, Linux / Proton only; not yet confirmed on Proton):
-
-- DLSS should now start under Proton. For Monster Hunter: World, Proton's NVIDIA layer (dxvk-nvapi) reports RTX cards as older GTX 10 cards, to keep the game's own old DLSS 1 from crashing, and NVIDIA's DLSS runtime then refused to start ("unsupported hw detected" in the log). The plugin now reports the card's real generation only for its own DLSS 4 start, after the game's DLSS 1 check has already run.
+- DLSS on Linux (Steam Proton) with an NVIDIA RTX card, confirmed by a player with the test build. For Monster Hunter: World, Proton's NVIDIA layer (dxvk-nvapi) reports RTX cards as older GTX 10 cards, to keep the game's own old DLSS 1 from crashing, and NVIDIA's DLSS runtime then refused to start ("unsupported hw detected" in the log). The plugin now reports the card's real generation only for its own DLSS 4 start, after the game's DLSS 1 check has already run.
 - No launch option is needed. If you added `DXVK_NVAPI_GPU_ARCH` to the launch options, remove it: set there, it also reaches the game's DLSS 1, and the game can quit right after starting.
-- Under Proton the log now names the Linux system and checks that NVIDIA's NGX files are in the game's prefix.
+- Under Proton the log now names the Linux system, checks that NVIDIA's NGX files are in the game's prefix, and says which card generation NVIDIA's DLSS runtime sees. Should that ever be wrong, for example with a future Proton version or graphics card, the log says so, and the new `GpuArch` setting in an `[Advanced]` section of the ini sets it by hand: `TU100` (RTX 20), `GA100` (RTX 30), `AD100` (RTX 40) or `GB200` (RTX 50 and newer). `GpuArch=Off` leaves it alone. It only does anything under Linux.
 - Corrected Proton hints in the log: Proton 9 and newer turn NVAPI on by default; `PROTON_ENABLE_NVAPI=1` is only needed with Proton 8 and older.
 
 ## 0.9.5 (2026-10-20)

@@ -338,13 +338,95 @@ bool AdapterDesc(Api api, void* device, DXGI_ADAPTER_DESC* desc) {
 }
 
 // dxvk-nvapi's architecture name for the PCI device id of an NVIDIA RTX card. GTX 16 (Turing
-// without tensor cores: TU116 0x21xx, TU117 0x1f8x and up) has no DLSS.
-const wchar_t* RtxArchitecture(UINT id) {
-    if (id >= 0x2b00) return L"GB200";                 // Blackwell GB20x (RTX 50)
-    if (id >= 0x2600 && id < 0x2900) return L"AD100";  // Ada (RTX 40)
-    if (id >= 0x2200 && id < 0x2600) return L"GA100";  // Ampere (RTX 30)
-    if (id >= 0x1e00 && id < 0x1f80) return L"TU100";  // Turing TU102/TU104/TU106 (RTX 20)
+// without tensor cores: TU116 0x21xx, TU117 0x1f8x and up) has no DLSS. Cards newer than RTX 50
+// are reported as RTX 50, which should do for NGX's check (DLSS needs RTX 20 or newer).
+const char* RtxArchitecture(UINT id) {
+    if (id >= 0x2b00) return "GB200";                 // Blackwell GB20x (RTX 50)
+    if (id >= 0x2600 && id < 0x2900) return "AD100";  // Ada (RTX 40)
+    if (id >= 0x2200 && id < 0x2600) return "GA100";  // Ampere (RTX 30)
+    if (id >= 0x1e00 && id < 0x1f80) return "TU100";  // Turing TU102/TU104/TU106 (RTX 20)
     return nullptr;
+}
+
+// NV_GPU_ARCHITECTURE_ID values (nvapi.h) under dxvk-nvapi's names for them.
+const char* ArchitectureName(uint32_t arch) {
+    switch (arch) {
+    case 0xe0: return "GK100";
+    case 0x110: return "GM000";
+    case 0x120: return "GM200";
+    case 0x130: return "GP100";
+    case 0x140: return "GV100";
+    case 0x160: return "TU100";
+    case 0x170: return "GA100";
+    case 0x190: return "AD100";
+    case 0x1b0: return "GB200";
+    default: return "unknown";
+    }
+}
+
+// What NVAPI now reports as the game's GPU architecture, which is what NGX checks. Shows whether
+// DXVK_NVAPI_GPU_ARCH took effect, should dxvk-nvapi ever change how it reads it.
+void LogNvApiArchitecture(UINT deviceId) {
+    using QueryFn = void*(__cdecl*)(uint32_t id);
+    using InitializeFn = int(__cdecl*)();
+    using EnumGpusFn = int(__cdecl*)(void* gpus[64], uint32_t* count);
+    using PciIdsFn = int(__cdecl*)(void* gpu, uint32_t* device, uint32_t* subSystem, uint32_t* revision,
+                                   uint32_t* extDevice);
+    struct ArchInfo {  // NV_GPU_ARCH_INFO_V2
+        uint32_t version, architecture, implementation, revision;
+    };
+    using ArchInfoFn = int(__cdecl*)(void* gpu, ArchInfo* info);
+
+    HMODULE nvapi = LoadLibraryExW(L"nvapi64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    auto query = nvapi ? reinterpret_cast<QueryFn>(GetProcAddress(nvapi, "nvapi_QueryInterface")) : nullptr;
+    if (!query) {
+        LOGW("Wine: no NVAPI (nvapi64.dll in the prefix's system32); NGX needs it to find the GPU");
+        return;
+    }
+    auto initialize = reinterpret_cast<InitializeFn>(query(0x0150e828));
+    auto enumGpus = reinterpret_cast<EnumGpusFn>(query(0xe5ac921f));
+    auto pciIds = reinterpret_cast<PciIdsFn>(query(0x2ddfb66e));
+    auto archInfo = reinterpret_cast<ArchInfoFn>(query(0xd8265d24));
+    void* gpus[64] = {};
+    uint32_t count = 0;
+    if (!initialize || !enumGpus || !archInfo || initialize() != 0 || enumGpus(gpus, &count) != 0 || !count) {
+        LOGW("Wine: NVAPI lists no NVIDIA GPU");
+        return;
+    }
+    void* gpu = gpus[0];
+    for (uint32_t i = 0; pciIds && deviceId && i < count && i < 64; ++i) {
+        uint32_t id = 0, subSystem = 0, revision = 0, extDevice = 0;
+        if (pciIds(gpus[i], &id, &subSystem, &revision, &extDevice) == 0 && (id >> 16) == deviceId) {
+            gpu = gpus[i];
+            break;
+        }
+    }
+    ArchInfo info{};
+    info.version = sizeof(ArchInfo) | (2u << 16);
+    if (int status = archInfo(gpu, &info); status != 0) {
+        LOGW("Wine: NVAPI could not report the GPU architecture ({})", status);
+        return;
+    }
+    if (info.architecture < 0x160)
+        LOGW("Wine: NVAPI reports the GPU as {} ({:#x}), older than RTX 20, so NGX will refuse DLSS. For an RTX "
+             "card set GpuArch in [Advanced] of MHW-DLSS4.ini to its generation: TU100 (RTX 20), GA100 (RTX 30), "
+             "AD100 (RTX 40) or GB200 (RTX 50 and newer)",
+             ArchitectureName(info.architecture), info.architecture);
+    else
+        LOGI("Wine: NVAPI reports the GPU as {} ({:#x})", ArchitectureName(info.architecture), info.architecture);
+}
+
+std::string EnvGpuArch() {
+    wchar_t value[32];
+    DWORD n = GetEnvironmentVariableW(L"DXVK_NVAPI_GPU_ARCH", value, 32);
+    if (!n || n >= 32) return {};
+    char name[32];
+    WideCharToMultiByte(CP_UTF8, 0, value, -1, name, sizeof(name), nullptr, nullptr);
+    return name;
+}
+
+void SetEnvGpuArch(const std::string& name) {
+    SetEnvironmentVariableW(L"DXVK_NVAPI_GPU_ARCH", std::wstring(name.begin(), name.end()).c_str());
 }
 
 // dxvk-nvapi (Proton's NVAPI) reports Turing and newer GPUs as Pascal to MonsterHunterWorld.exe,
@@ -352,34 +434,35 @@ const wchar_t* RtxArchitecture(UINT id) {
 // ("unsupported hw detected"). Its override DXVK_NVAPI_GPU_ARCH is read at every
 // NvAPI_GPU_GetArchInfo call, so setting it here, after the game's NGX 1.x init, reaches only the
 // plugin's init. Set as a launch option it also reaches the game's DLSS 1 (the game then quit
-// before its logo in the Proton report).
+// before its logo in the Proton report). GpuArch in the ini picks the value by hand or turns this
+// off, for cards or dxvk-nvapi versions the mapping does not know.
 void UnspoofGpuArchitecture(Api api, void* device) {
-    const char* wine = WineVersion();
-    if (!wine) return;
-    wchar_t current[32];
-    if (DWORD n = GetEnvironmentVariableW(L"DXVK_NVAPI_GPU_ARCH", current, 32); n && n < 32) {
-        char name[32];
-        WideCharToMultiByte(CP_UTF8, 0, current, -1, name, sizeof(name), nullptr, nullptr);
-        LOGI("Wine: DXVK_NVAPI_GPU_ARCH={} from the launch options", name);
-        return;
-    }
+    if (!WineVersion()) return;
     DXGI_ADAPTER_DESC desc{};
-    if (!AdapterDesc(api, device, &desc)) {
+    bool adapter = AdapterDesc(api, device, &desc);
+    UINT nvidiaDevice = adapter && desc.VendorId == 0x10de ? desc.DeviceId : 0;
+    std::string launch = EnvGpuArch();
+    const std::string& wanted = g_config.gpuArch;
+    if (wanted == "OFF") {
+        LOGI("Wine: GpuArch=Off, DXVK_NVAPI_GPU_ARCH left {}", launch.empty() ? "unset" : launch);
+    } else if (!wanted.empty()) {
+        SetEnvGpuArch(wanted);
+        LOGI("Wine: DXVK_NVAPI_GPU_ARCH={} set for NGX (GpuArch in the ini{})", wanted,
+             launch.empty() ? "" : ", replacing " + launch + " from the launch options");
+    } else if (!launch.empty()) {
+        LOGI("Wine: DXVK_NVAPI_GPU_ARCH={} from the launch options", launch);
+    } else if (!adapter) {
         LOGW("Wine: the game's graphics adapter could not be read; NVAPI keeps reporting it as it does");
-        return;
-    }
-    const wchar_t* arch = desc.VendorId == 0x10de ? RtxArchitecture(desc.DeviceId) : nullptr;
-    if (!arch) {
+    } else if (const char* arch = nvidiaDevice ? RtxArchitecture(nvidiaDevice) : nullptr) {
+        SetEnvGpuArch(arch);
+        LOGI("Wine: DXVK_NVAPI_GPU_ARCH={} set for NGX (device {:04x}; dxvk-nvapi shows this game RTX cards as "
+             "GTX 10 cards)",
+             arch, desc.DeviceId);
+    } else {
         LOGI("Wine: adapter {:04x}:{:04x} is no known RTX card; NVAPI keeps reporting it as it does", desc.VendorId,
              desc.DeviceId);
-        return;
     }
-    SetEnvironmentVariableW(L"DXVK_NVAPI_GPU_ARCH", arch);
-    char name[16];
-    WideCharToMultiByte(CP_UTF8, 0, arch, -1, name, sizeof(name), nullptr, nullptr);
-    LOGI("Wine: DXVK_NVAPI_GPU_ARCH={} set for NGX (device {:04x}; dxvk-nvapi shows this game RTX cards as "
-         "GTX 10 cards)",
-         name, desc.DeviceId);
+    LogNvApiArchitecture(nvidiaDevice);
 }
 
 bool InitModern(Api api, void* device);

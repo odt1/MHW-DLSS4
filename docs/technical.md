@@ -134,6 +134,14 @@ Measured in the hub (2560x1440, same spawn point, restart per variant): Performa
 - Pass order (filter sort keys, from the other mod's notes, not re-checked): bloom runs before the TAA pass; then depth of field, motion blur, tone mapping and colour grading, FXAA, and the DLISP point. So in the upscaling modes DLSS sees the frame after depth of field, motion blur and tone mapping; bloom is already in the TAA input.
 - DX12 frame pacing: before each update of the main object the main thread waits up to 1 s for the swap chain's frame latency waitable object (`+0x23ade30`, called from `+0x229b020` in DX12 only; the swap chain's `SetMaximumFrameLatency` is called at `+0x23a6553`). A single timeout sets a latch (device `+0x10da`) that switches the wait off until the game exits. The plugin's Reflex sleep comes after it. Not measured separately; the latency measurements above include it.
 
+## Linux (Proton)
+
+DLSS under Proton needs Proton 9 or newer, which turns NVAPI on by default (Proton 8: `PROTON_ENABLE_NVAPI=1`), and the NVIDIA driver's `nvngx.dll`, which Proton copies into the prefix's system32 when the driver package ships it. The log names the Wine version and host and checks the registered NGX core folder.
+
+Proton's NVAPI, dxvk-nvapi, reports Turing and newer GPUs as Pascal to `MonsterHunterWorld.exe` (`needsPascalSpoofing` in its `src/util/util_env.cpp`, since 2022), because the game's own DLSS 1 crashed under Proton. NGX then refuses DLSS with "unsupported hw detected" (`0xbad00001` from the NGX init). dxvk-nvapi reads `DXVK_NVAPI_GPU_ARCH` at every `NvAPI_GPU_GetArchInfo` call and lets it take precedence over the spoof. So since 0.9.6 the plugin sets it in its own process right before its NGX init, after the game's DLSS 1 check has run: `GB200` for PCI device ids from 0x2b00 (newer generations included), `AD100` for 0x2600..0x28ff, `GA100` for 0x2200..0x25ff, `TU100` for 0x1e00..0x1f7f (GTX 16 cards have no DLSS). Set as a Steam launch option, the variable also reaches the game's DLSS 1; with Stracker's Loader alone the game then quit before its logo. Confirmed working on Proton with 0.9.6 test 1 (a player's log, 2026-10-25).
+
+Since 0.9.7 the log then says what NVAPI reports for the game's GPU (`Wine: NVAPI reports the GPU as AD100 (0x190)`), with a warning and the `GpuArch` values when it is still older than Turing. `GpuArch` in `[Advanced]` sets the value by hand or turns the plugin's setting off, for cards outside the mapping or a dxvk-nvapi that changes its spoofing. If dxvk-nvapi ever reads the variable only once, setting it in the process would come too late; the log would show Pascal, and the remaining way would be the launch option (inferred, not tested).
+
 ## Graphics debugging
 
 The game exe restarts itself through Steam when it is started directly (Steam DRM), so launchers of graphics debuggers lose it. `tools/capture/` loads RenderDoc from inside the game instead:
@@ -178,6 +186,7 @@ The default ini only holds the player settings. These keys are read from an `[Ad
 | `DebugDumpFrames`, `DebugDumpDelay` | 0, 5 | D3D12: dump N frames of colour, motion, depth and jitter to `MHW-DLSS4\`, starting the given seconds after the reload. |
 | `DebugDumpOutput` | 0 | D3D11: write one DLSS output frame to `MHW-DLSS4\output.bin`. |
 | `DebugFixedJitter`, `DebugJitterX/Y` | 0 | Replace the camera jitter with a constant (camera units). |
+| `GpuArch` | Auto | Under Wine / Proton only: the `DXVK_NVAPI_GPU_ARCH` value set for the plugin's NGX init. `Auto` = from the card's PCI device id (a value from the launch options is kept), `Off` = leave the variable alone, or one of dxvk-nvapi's names (`TU100`, `GA100`, `AD100`, `GB200`; it ignores names it doesn't know), which also replaces a launch option value. Read at the first DLSS evaluate, so changes need a restart. See [Linux (Proton)](#linux-proton). |
 | `DebugNgxFail` | 0 | Act as if NGX could not be initialised (the Proton report of 0.9.4): DLSS turns itself off and the game renders at full size. Read at the first DLSS evaluate. |
 | `DebugNoNvidia` | 0 | Act as if the PC had no NVIDIA graphics card: the game's NGX init fails (the game then shows its own "DLSS not available" message once and writes `NVIDIA DLSS=Off` into graphics_option.ini) and the plugin switches itself off. |
 | `LatencyStats` | 0 | Log NVIDIA's latency report every 5 seconds (Reflex markers; works with `LowLatency=Off` too). |

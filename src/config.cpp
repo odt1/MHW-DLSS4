@@ -250,6 +250,11 @@ void LoadConfig(const std::wstring& ini) {
     auto mipBias = Lower(ReadString(ini, L"Advanced", L"MipBias", L"auto"));
     if (mipBias == L"off") c.mipBias = 0.0f;
     else if (mipBias != L"auto") c.mipBias = std::clamp(ReadFloat(ini, L"Advanced", L"MipBias", 0.0f), -3.0f, 0.0f);
+    // Passed on as given: dxvk-nvapi ignores names it does not know, and the log shows what NVAPI
+    // then reports.
+    for (wchar_t ch : ReadString(ini, L"Advanced", L"GpuArch", L"auto"))
+        if (ch < 0x80) c.gpuArch += static_cast<char>(std::towupper(ch));
+    if (c.gpuArch == "AUTO") c.gpuArch.clear();
     c.hdr = static_cast<int>(ReadFloat(ini, L"Advanced", L"HDR", static_cast<float>(c.hdr)));
     c.exposureScale = ReadFloat(ini, L"Advanced", L"ExposureScale", c.exposureScale);
     c.preExposure = ReadFloat(ini, L"Advanced", L"PreExposure", c.preExposure);
