@@ -29,6 +29,13 @@ struct Jitter {
     float y = 0.0f;
     uint64_t frame = 0;
     bool cut = false;  // the camera jumped since the previous frame: DLSS history must not be used
+    // For the reset log: the TAA filter's history-invalid byte and blend rate when the pass was
+    // built (the game's own reset request), and the camera change since the last TAA frame.
+    bool historyInvalid = false;
+    float blend = -1.0f;
+    float moved = 0.0f;   // world units (centimetres)
+    float turned = 0.0f;  // degrees
+    float zoom = 0.0f;    // relative change of the projection scale
 };
 
 // Finds the game globals and hooks the TAA filter. Safe to call under the loader lock. The hooks

@@ -44,6 +44,8 @@ constexpr ptrdiff_t kViewportView = 0xa0;    // view matrix (row vectors), unjit
 constexpr ptrdiff_t kViewportProj = 0xe0;    // projection, unjittered
 constexpr ptrdiff_t kTaaHistory = 0x168;   // three texture objects, indexed by frame % 3
 constexpr ptrdiff_t kTaaSharpen = 0x187;   // mSharpen: TAA sharpen pass; the history slot shifts by one
+constexpr ptrdiff_t kTaaBlendRate = 0x180;       // mBlendRate (0.95 from the constructor; scene data can set it)
+constexpr ptrdiff_t kTaaHistoryInvalid = 0x185;  // set on history rebuilds and render scale changes
 constexpr ptrdiff_t kTextureNative = 0x60;
 constexpr ptrdiff_t kTextureDepthNative = 0xf0;
 // Natives are reference counted; the game releases them at +0x2554f90 (lock xadd -1, destroyed
@@ -201,9 +203,9 @@ struct CameraShot {
 };
 uint64_t g_cutFrame = 0;  // renderer frame of the last camera read
 bool g_cutFrameIsCut = false;
+float g_cutMoved = 0.0f, g_cutTurned = 0.0f, g_cutZoom = 0.0f;  // camera change of that frame
 std::optional<CameraShot> g_lastShot;
 int g_shotViewport = -2;  // viewport of the last read, -1 none, -2 not read yet
-std::atomic<uint64_t> g_cuts{0};
 int g_viewportLogs = 0;
 
 // The main viewport (active, pass 0, drawn to the screen) of the camera, as position, view direction
@@ -252,6 +254,7 @@ bool CameraCut(uint8_t* camera, uint64_t frame) {
     g_shotViewport = viewport;
     g_cutFrame = frame;
     g_cutFrameIsCut = false;
+    g_cutMoved = g_cutTurned = g_cutZoom = 0.0f;
     if (shot && g_lastShot) {
         const CameraShot& a = *g_lastShot;
         const CameraShot& b = *shot;
@@ -268,11 +271,12 @@ bool CameraCut(uint8_t* camera, uint64_t frame) {
         for (int j = 0; j < 2; ++j)
             if (a.scale[j] != 0.0f) zoom = std::max(zoom, std::abs(b.scale[j] / a.scale[j] - 1.0f));
         g_cutFrameIsCut = d2 > kCutDistance * kCutDistance || cosTurn < kCutTurnCos || zoom > kCutProjection;
-        if (g_cutFrameIsCut && g_cuts.fetch_add(1) < 20)
-            LOGD("camera cut at frame {}: moved {:.0f}, turned {:.0f} degrees, zoom {:.1f}%; DLSS history reset",
-                 frame, std::sqrt(d2), std::acos(std::clamp(cosTurn, -1.0f, 1.0f)) * 57.29578f, zoom * 100.0f);
+        g_cutMoved = std::sqrt(d2);
+        g_cutTurned = std::acos(std::clamp(cosTurn, -1.0f, 1.0f)) * 57.29578f;
+        g_cutZoom = zoom;
     }
-    g_lastShot = shot;
+    // A frame without a readable main viewport keeps the last shot, so a cut across it still counts.
+    if (shot) g_lastShot = shot;
     return g_cutFrameIsCut;
 }
 
@@ -317,6 +321,11 @@ void CaptureJitter(uint8_t* taa) {
 
     std::lock_guard lock(g_jitterMutex);
     rec.jitter.cut = CameraCut(camera, *frame);
+    rec.jitter.historyInvalid = mem::SafeRead<uint8_t>(taa + kTaaHistoryInvalid).value_or(0) != 0;
+    rec.jitter.blend = mem::SafeRead<float>(taa + kTaaBlendRate).value_or(-1.0f);
+    rec.jitter.moved = g_cutMoved;
+    rec.jitter.turned = g_cutTurned;
+    rec.jitter.zoom = g_cutZoom;
     g_jitterRecords[g_jitterNext] = rec;
     g_jitterNext = (g_jitterNext + 1) % g_jitterRecords.size();
 }

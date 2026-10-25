@@ -98,6 +98,8 @@ struct Config {
     float RenderScale() const;
     // Sharpening strength in effect, 0..1 (from the ini or the game's option).
     float Sharpness() const;
+    // The render preset as NVIDIA names it (K for 11), '-' for the default.
+    char PresetLetter() const { return preset ? static_cast<char>('A' + preset - 1) : '-'; }
 };
 
 extern Config g_config;

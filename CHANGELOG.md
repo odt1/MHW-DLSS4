@@ -4,7 +4,15 @@ Changes in each version of MHW-DLSS4, for players. Developer detail is in the gi
 
 Unless a version says otherwise, no ini changes are needed and old ini files keep working. No version changes game files or game code.
 
-## 0.9.7 (2026-10-25)
+## 0.9.9 (2026-10-25)
+
+There is no 0.9.8. Coming from 0.9.5 or older: the changes of 0.9.7 below are part of this version too.
+
+- Checked: DLSS doesn't start over during fights. A port of this plugin to FSR reported split-second blur in combat and suspected this. We played a full expedition with two monsters and cutscenes and logged every restart. DLSS started fresh only at loading screens, cutscene cuts and a few one-frame camera jumps, never from hits, roars or camera shake.
+- Camera cuts are now also caught when the game draws a frame without its main camera, for example at some scene changes.
+- With `LogLevel=Debug`, the log names each time DLSS starts fresh and why: loading, camera cut (with how far the camera moved, turned and zoomed), or a settings change. This helps with reports of blur or ghosting.
+- The log shows the render preset the same way everywhere (`preset K`).
+
 
 0.9.6 was only released as a test build for Linux (0.9.6 test 1, 2026-10-24); its changes are part of 0.9.7.
 

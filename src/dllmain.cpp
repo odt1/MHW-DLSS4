@@ -64,7 +64,7 @@ void Start(HMODULE module) {
     LOGI("config: mode {} (render scale {:.3f}), preset {}, sharpness {:.2f}{} with {}, depth inverted {}, MV scale {},{}, "
          "jitter scale {},{}, reflection fix {}, Reflex {}, frame limit {}",
          QualityModeName(g_config.mode), g_config.RenderScale(),
-         g_config.preset ? static_cast<char>('A' + g_config.preset - 1) : '-', g_config.Sharpness(),
+         g_config.PresetLetter(), g_config.Sharpness(),
          g_config.sharpness < 0.0f ? " (game option)" : "", SharpenerName(g_config.sharpener), g_config.depthInverted, g_config.mvScaleX,
          g_config.mvScaleY, g_config.jitterScaleX, g_config.jitterScaleY, g_config.reflectionFix,
          ReflexModeName(g_config.reflex),

@@ -666,8 +666,7 @@ bool EnsureDlss(Feature& f, void* cmd, unsigned inW, unsigned inH, unsigned outW
     }
     d.failed = false;
     LOGI("DLSS feature created at the {} position: {}x{} -> {}x{}, quality {}, flags {:#x}, preset {}", f.Name(), inW,
-         inH, outW, outH, static_cast<int>(create.Feature.InPerfQualityValue), flags,
-         g_config.preset ? static_cast<char>('A' + g_config.preset - 1) : '-');
+         inH, outW, outH, static_cast<int>(create.Feature.InPerfQualityValue), flags, g_config.PresetLetter());
     LogDlssModules();
     return true;
 }
@@ -787,6 +786,30 @@ void LogEvaluation(Feature& f, NVSDK_NGX_Result r, const EvalInputs& in, const d
     }
 }
 
+// Where each DLSS history reset came from: the game's request (its DLSS 1 Reset: the TAA history
+// was rebuilt, or the blend rate is 0), a camera cut, or the plugin (ini reload), with the camera
+// change behind a cut. A fork (MHW-FSR) reported resets in combat as split-second blur; a 66-minute
+// session with a hunt (0.9.9) logged only loads, scripted camera snaps and cutscene cuts.
+void LogReset(const Feature& f, uint64_t frame, bool game, bool cut, bool plugin,
+              const std::optional<game::Jitter>& jitter) {
+    constexpr uint64_t kMaxResetLogs = 500;
+    static std::atomic<uint64_t> logged{0};
+    uint64_t n = logged.fetch_add(1);
+    if (n > kMaxResetLogs) return;
+    if (n == kMaxResetLogs) {
+        LOGD("{} resets logged; further resets are only counted", kMaxResetLogs);
+        return;
+    }
+    if (!jitter) {
+        LOGD("{} reset at frame {}: game {}, plugin {} (no jitter record)", f.Name(), frame, game, plugin);
+        return;
+    }
+    LOGD("{} reset at frame {}: game {} (history invalid {}, blend {:.3f}), camera cut {} (moved {:.0f}, turned {:.1f} "
+         "degrees, zoom {:.1f}%), plugin {}",
+         f.Name(), frame, game, jitter->historyInvalid, jitter->blend, cut, jitter->moved, jitter->turned,
+         jitter->zoom * 100.0f, plugin);
+}
+
 // The game's DLSS 1 call inside its TAA pass. Colour, motion vectors and depth are at render
 // resolution; the output is the TAA history texture the rest of the frame reads.
 NVSDK_NGX_Result EvaluateAtTaa(Feature& f, void* cmd, const NVSDK_NGX_Parameter* p) {
@@ -816,12 +839,12 @@ NVSDK_NGX_Result EvaluateAtTaa(Feature& f, void* cmd, const NVSDK_NGX_Parameter*
     in.jitterX = (jitter ? jitter->x : 0.0f) * g_config.jitterScaleX * scale;
     in.jitterY = (jitter ? jitter->y : 0.0f) * g_config.jitterScaleY * scale;
     // The game resets only when it rebuilds the TAA history; camera cuts come from the camera.
-    in.reset = GetI(p, NVSDK_NGX_Parameter_Reset) || (jitter && jitter->cut && g_config.cutReset);
-    if (f.resetNext) {
-        f.resetNext = false;
-        in.reset = 1;
-    }
+    bool gameReset = GetI(p, NVSDK_NGX_Parameter_Reset) != 0;
+    bool cutReset = jitter && jitter->cut && g_config.cutReset;
+    bool pluginReset = std::exchange(f.resetNext, false);
+    in.reset = gameReset || cutReset || pluginReset;
     uint64_t frame = jitter ? jitter->frame : 0;
+    if (in.reset) LogReset(f, frame, gameReset, cutReset, pluginReset, jitter);
 
     if (f.api == Api::D3D12) {
         auto* cl = static_cast<ID3D12GraphicsCommandList*>(cmd);
@@ -1372,7 +1395,7 @@ void ReloadSettings(bool& recompute) {
         LogSetLevel(g_config.logLevel);
         LOGI("ini reloaded: mode {}, preset {}, depth inverted {}, MV scale {},{}, jitter scale {},{}, auto "
              "exposure {}, reflection fix {}, bypass {}, Reflex {}, frame limit {}",
-             QualityModeName(g_config.mode), g_config.preset, g_config.depthInverted, g_config.mvScaleX,
+             QualityModeName(g_config.mode), g_config.PresetLetter(), g_config.depthInverted, g_config.mvScaleX,
              g_config.mvScaleY, g_config.jitterScaleX, g_config.jitterScaleY, g_config.autoExposure,
              g_config.reflectionFix, g_config.bypass, ReflexModeName(g_config.reflex), g_config.frameLimit);
         for (auto& f : g_features) {
